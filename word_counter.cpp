@@ -11,8 +11,9 @@
 
 #include "utils.hpp"
 
-wc::wordCounter::wordCounter(const std::string& dir, uint32_t num_threads)
+wc::wordCounter::wordCounter(const std::string& dir, uint32_t n, uint32_t num_threads)
     : dir(dir),
+      n(n),
       num_threads(num_threads) {
 }
 
@@ -21,7 +22,7 @@ void wc::wordCounter::compute() {
     std::mutex wc_mtx;
 
     std::vector<fs::path> files_to_sweep = utils::find_all_files(dir, [](const std::string& extension) {
-        return extension == ".h" || extension == ".c";
+        return extension == ".txt";
     });
 
     // threads use this atomic as fetch and add to decide on which files to process
@@ -76,6 +77,7 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
     std::stringstream buffer;
     buffer << fin.rdbuf();
     std::string contents = buffer.str();
+    process_file_string(contents);
     // break the word into sequences of alphanumeric characters, ignoring other characters
     std::regex rgx("\\W+");
     std::sregex_token_iterator iter(contents.begin(), contents.end(), rgx, -1);
@@ -84,5 +86,51 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
         if (*iter != "") {
             local_freq[*iter]++;
         }
+    }
+}
+
+void wc::wordCounter::process_file_string(const std::string& file_string) {
+    std::string my_string = file_string;
+
+    while (my_string.size() > 0) {
+        std::stringstream my_sentence_stream;
+        int i = 0;
+        int j = 0;
+        while ((my_string[j] < '0' || my_string[j] > '9') && !std::ispunct(my_string[j]) && j < my_string.size()) {
+            my_sentence_stream << my_string[j];
+            j++;
+        }
+
+        // recursively process the sentence
+        const std::regex rgx("\\W+");
+        std::string my_sentence = my_sentence_stream.str();
+        std::sregex_token_iterator iter(my_sentence.begin(), my_sentence.end(), rgx, -1);
+        std::sregex_token_iterator end;
+        // in case the first character is not a word
+        if (*iter == "") iter++;
+        process_file_string_helper(iter, end);
+
+        // discard from the beginning of my_string to the appearance of the first punctuation mark
+        if (!(j == my_string.size())) {
+            my_string = my_string.substr(j + 1);
+        } else {
+            return;
+        }
+    }
+}
+
+void wc::wordCounter::process_file_string_helper(std::sregex_token_iterator iter, std::sregex_token_iterator end) {
+    static std::mutex io_mutex;
+    if (std::distance(iter, end) >= n) {
+        uint32_t i = 0;
+        {
+            std::scoped_lock<std::mutex> lk(io_mutex);
+            while (i < n) {
+                std::cout << *(std::next(iter, i)) << " ";
+                i++;
+            }
+            std::cout << "|" << std::endl;
+        }
+        process_file_string_helper(++iter, end);
     }
 }
