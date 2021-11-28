@@ -77,6 +77,12 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
     std::stringstream buffer;
     buffer << fin.rdbuf();
     std::string contents = buffer.str();
+    std::transform(contents.begin(), contents.end(), contents.begin(),
+                   [*this](unsigned char c) {
+                       if (c == '\n' || c == '\t') return (int)' ';
+                       if ((c >= '0' && c <= '9') || std::ispunct(c)) return (int)default_punct;
+                       return std::tolower(c);
+                   });
     process_file_string(contents);
     // break the word into sequences of alphanumeric characters, ignoring other characters
     std::regex rgx("\\W+");
@@ -95,10 +101,9 @@ void wc::wordCounter::process_file_string(const std::string& file_string) {
     while (my_string.size() > 0) {
         std::stringstream my_sentence_stream;
         int i = 0;
-        int j = 0;
-        while ((my_string[j] < '0' || my_string[j] > '9') && !std::ispunct(my_string[j]) && j < my_string.size()) {
-            my_sentence_stream << my_string[j];
-            j++;
+        while (my_string[i] != default_punct && i < my_string.size()) {
+            my_sentence_stream << my_string[i];
+            i++;
         }
 
         // recursively process the sentence
@@ -106,13 +111,13 @@ void wc::wordCounter::process_file_string(const std::string& file_string) {
         std::string my_sentence = my_sentence_stream.str();
         std::sregex_token_iterator iter(my_sentence.begin(), my_sentence.end(), rgx, -1);
         std::sregex_token_iterator end;
-        // in case the first character is not a word
+        // in case the first character of my_sentence is space, skip the parsed empty string
         if (*iter == "") iter++;
         process_file_string_helper(iter, end);
 
         // discard from the beginning of my_string to the appearance of the first punctuation mark
-        if (!(j == my_string.size())) {
-            my_string = my_string.substr(j + 1);
+        if (!(i == my_string.size())) {
+            my_string = my_string.substr(i + 1);
         } else {
             return;
         }
@@ -122,9 +127,9 @@ void wc::wordCounter::process_file_string(const std::string& file_string) {
 void wc::wordCounter::process_file_string_helper(std::sregex_token_iterator iter, std::sregex_token_iterator end) {
     static std::mutex io_mutex;
     if (std::distance(iter, end) >= n) {
-        uint32_t i = 0;
         {
             std::scoped_lock<std::mutex> lk(io_mutex);
+            uint32_t i = 0;
             while (i < n) {
                 std::cout << *(std::next(iter, i)) << " ";
                 i++;

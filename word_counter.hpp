@@ -13,6 +13,7 @@ class wordCounter {
     fs::path dir;
     uint32_t n;
     uint32_t num_threads;
+    char default_punct = '|';
 
     void process_file(fs::path& file, std::map<std::string, uint64_t>& local_freq);
     void process_file_string(const std::string& file_string);
