@@ -33,9 +33,11 @@ void wc::wordCounter::compute() {
     auto my_sweep = [this, &files_per_thread, &wc_mtx](uint32_t thread_id) {
         std::vector<fs::path> local_files_to_sweep = files_per_thread[thread_id];
         std::map<std::string, uint64_t> local_freq;
+        std::map<uint64_t, uint64_t> local_n_gram_freq;
+        std::vector<std::string> local_n_grams;
 
         for (fs::path file : local_files_to_sweep) {
-            process_file(file, local_freq);
+            process_file(file, local_freq, local_n_gram_freq, local_n_grams);
         }
 
         // update this->freq and exit
@@ -46,22 +48,22 @@ void wc::wordCounter::compute() {
     };
 
     // threads use this atomic as fetch and add to decide on which files to process
-    std::atomic<uint64_t> global_index = 0;
+    // std::atomic<uint64_t> global_index = 0;
 
-    auto sweep = [this, &files_to_sweep, &global_index, &wc_mtx]() {
-        std::map<std::string, uint64_t> local_freq;
+    // auto sweep = [this, &files_to_sweep, &global_index, &wc_mtx]() {
+    //     std::map<std::string, uint64_t> local_freq;
 
-        uint64_t file_index;
-        while ((file_index = global_index++) < files_to_sweep.size()) {
-            process_file(files_to_sweep[file_index], local_freq);
-        }
+    //     uint64_t file_index;
+    //     while ((file_index = global_index++) < files_to_sweep.size()) {
+    //         process_file(files_to_sweep[file_index], local_freq);
+    //     }
 
-        // update this->freq and exit
-        std::lock_guard<std::mutex> lock(wc_mtx);
-        for (auto [word, cnt] : local_freq) {
-            freq[word] += cnt;
-        }
-    };
+    //     // update this->freq and exit
+    //     std::lock_guard<std::mutex> lock(wc_mtx);
+    //     for (auto [word, cnt] : local_freq) {
+    //         freq[word] += cnt;
+    //     }
+    // };
 
     // start all threads and wait for them to finish
     std::vector<std::thread> workers;
@@ -92,7 +94,9 @@ void wc::wordCounter::display() {
     }
 }
 
-void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_t>& local_freq) {
+void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_t>& local_freq,
+                                   std::map<uint64_t, uint64_t>& local_n_gram_freq,
+                                   std::vector<std::string>& local_n_grams) {
     // read the entire file and update local_freq
     std::ifstream fin(file);
     std::stringstream buffer;
@@ -104,24 +108,12 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
                        if ((c >= '0' && c <= '9') || std::ispunct(c)) return (int)default_punct;
                        return std::tolower(c);
                    });
-    process_file_string(contents);
-    // break the word into sequences of alphanumeric characters, ignoring other characters
-    std::regex rgx("\\W+");
-    std::sregex_token_iterator iter(contents.begin(), contents.end(), rgx, -1);
-    std::sregex_token_iterator end;
-    for (; iter != end; ++iter) {
-        if (*iter != "") {
-            local_freq[*iter]++;
-        }
-    }
-}
 
-void wc::wordCounter::process_file_string(const std::string& file_string) {
-    std::string my_string = file_string;
-
+    // process the file
+    std::string my_string = std::string(contents);
     while (my_string.size() > 0) {
         std::stringstream my_sentence_stream;
-        int i = 0;
+        size_t i = 0;
         while (my_string[i] != default_punct && i < my_string.size()) {
             my_sentence_stream << my_string[i];
             i++;
@@ -134,29 +126,41 @@ void wc::wordCounter::process_file_string(const std::string& file_string) {
         std::sregex_token_iterator end;
         // in case the first character of my_sentence is space, skip the parsed empty string
         if (*iter == "") iter++;
-        process_file_string_helper(iter, end);
+        process_file_string_helper(iter, end, local_n_gram_freq, local_n_grams);
 
         // discard from the beginning of my_string to the appearance of the first punctuation mark
-        if (!(i == my_string.size())) {
-            my_string = my_string.substr(i + 1);
-        } else {
-            return;
+        my_string = i == my_string.size() ? my_string.substr(i) : my_string.substr(i + 1);
+    }
+
+    // break the word into sequences of alphanumeric characters, ignoring other characters
+    std::regex rgx("\\W+");
+    std::sregex_token_iterator iter(contents.begin(), contents.end(), rgx, -1);
+    std::sregex_token_iterator end;
+    for (; iter != end; ++iter) {
+        if (*iter != "") {
+            local_freq[*iter]++;
         }
     }
 }
 
-void wc::wordCounter::process_file_string_helper(std::sregex_token_iterator iter, std::sregex_token_iterator end) {
+void wc::wordCounter::process_file_string_helper(std::sregex_token_iterator iter, std::sregex_token_iterator end,
+                                                 std::map<uint64_t, uint64_t>& local_n_gram_freq,
+                                                 std::vector<std::string>& local_n_grams) {
     static std::mutex io_mutex;
     if (std::distance(iter, end) >= n) {
-        {
-            std::scoped_lock<std::mutex> lk(io_mutex);
-            uint32_t i = 0;
-            while (i < n) {
-                std::cout << *(std::next(iter, i)) << " ";
-                i++;
+        std::stringstream my_n_gram_stream;
+        uint32_t i = 0;
+        while (i < n) {
+            my_n_gram_stream << *(std::next(iter, i));
+            if (i != n - 1) {
+                my_n_gram_stream << " ";
             }
-            std::cout << "|" << std::endl;
+            i++;
         }
-        process_file_string_helper(++iter, end);
+        {
+            std::scoped_lock lock(io_mutex);
+            std::cout << my_n_gram_stream.str() << std::endl;
+        }
+        process_file_string_helper(++iter, end, local_n_gram_freq, local_n_grams);
     }
 }
