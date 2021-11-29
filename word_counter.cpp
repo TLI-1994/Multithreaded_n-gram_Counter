@@ -25,6 +25,26 @@ void wc::wordCounter::compute() {
         return extension == ".txt";
     });
 
+    std::vector<std::vector<fs::path>> files_per_thread(num_threads);
+    for (uint32_t i = 0; i < files_to_sweep.size(); i++) {
+        files_per_thread[i % num_threads].push_back(files_to_sweep[i]);
+    }
+
+    auto my_sweep = [this, &files_per_thread, &wc_mtx](uint32_t thread_id) {
+        std::vector<fs::path> local_files_to_sweep = files_per_thread[thread_id];
+        std::map<std::string, uint64_t> local_freq;
+
+        for (fs::path file : local_files_to_sweep) {
+            process_file(file, local_freq);
+        }
+
+        // update this->freq and exit
+        std::lock_guard<std::mutex> lock(wc_mtx);
+        for (auto [word, cnt] : local_freq) {
+            freq[word] += cnt;
+        }
+    };
+
     // threads use this atomic as fetch and add to decide on which files to process
     std::atomic<uint64_t> global_index = 0;
 
@@ -46,7 +66,8 @@ void wc::wordCounter::compute() {
     // start all threads and wait for them to finish
     std::vector<std::thread> workers;
     for (uint32_t i = 0; i < num_threads; ++i) {
-        workers.push_back(std::thread(sweep));
+        // workers.push_back(std::thread(sweep));
+        workers.push_back(std::thread(my_sweep, i));
     }
     for (auto& worker : workers) {
         worker.join();
@@ -78,7 +99,7 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
     buffer << fin.rdbuf();
     std::string contents = buffer.str();
     std::transform(contents.begin(), contents.end(), contents.begin(),
-                   [*this](unsigned char c) {
+                   [this](unsigned char c) {
                        if (c == '\n' || c == '\t') return (int)' ';
                        if ((c >= '0' && c <= '9') || std::ispunct(c)) return (int)default_punct;
                        return std::tolower(c);
