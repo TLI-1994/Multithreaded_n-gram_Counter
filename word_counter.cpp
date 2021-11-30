@@ -30,10 +30,10 @@ void wc::wordCounter::compute() {
         files_per_thread[i % num_threads].push_back(files_to_sweep[i]);
     }
 
-    auto my_sweep = [this, &files_per_thread, &wc_mtx](uint32_t thread_id) {
+    auto my_sweep = [this, &files_per_thread, &wc_mtx](const uint32_t thread_id) {
         std::vector<fs::path> local_files_to_sweep = files_per_thread[thread_id];
         std::map<std::string, uint64_t> local_freq;
-        std::map<uint64_t, uint64_t> local_n_gram_freq;
+        std::map<std::string, uint64_t> local_n_gram_freq;
         std::vector<std::string> local_n_grams;
 
         for (fs::path file : local_files_to_sweep) {
@@ -95,7 +95,7 @@ void wc::wordCounter::display() {
 }
 
 void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_t>& local_freq,
-                                   std::map<uint64_t, uint64_t>& local_n_gram_freq,
+                                   std::map<std::string, uint64_t>& local_n_gram_freq,
                                    std::vector<std::string>& local_n_grams) {
     // read the entire file and update local_freq
     std::ifstream fin(file);
@@ -144,7 +144,7 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
 }
 
 void wc::wordCounter::process_file_string_helper(std::sregex_token_iterator iter, std::sregex_token_iterator end,
-                                                 std::map<uint64_t, uint64_t>& local_n_gram_freq,
+                                                 std::map<std::string, uint64_t>& local_n_gram_freq,
                                                  std::vector<std::string>& local_n_grams) {
     static std::mutex io_mutex;
     if (std::distance(iter, end) >= n) {
@@ -157,6 +157,14 @@ void wc::wordCounter::process_file_string_helper(std::sregex_token_iterator iter
             }
             i++;
         }
+        std::string my_n_gram = my_n_gram_stream.str();
+
+        // update local n-gram freq and n-gram table
+        if (local_n_gram_freq.find(my_n_gram) == local_n_gram_freq.end()) {
+            local_n_grams.push_back(my_n_gram);
+        }
+        local_n_gram_freq[my_n_gram]++;
+
         {
             std::scoped_lock lock(io_mutex);
             std::cout << my_n_gram_stream.str() << std::endl;
