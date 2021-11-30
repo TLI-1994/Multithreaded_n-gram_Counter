@@ -22,40 +22,56 @@ void wc::wordCounter::compute() {
     // this tracks which files have already been processed or are being processed
     std::mutex wc_mtx;
 
-    using group_t = std::vector<std::map<std::string, uint64_t>>;
-    std::vector<std::promise<group_t>> promises(num_threads);
-    std::vector<std::future<group_t>> futures;
-    for (size_t i = 0; i < num_threads; i++) {
-        futures.push_back(promises[i].get_future());
+    using fmap = std::map<std::string, uint64_t>;
+
+    // shuffle
+    std::vector<std::vector<std::promise<fmap>>> promises;
+    for (uint32_t i = 0; i != num_threads; i++) {
+        promises.push_back(std::vector<std::promise<fmap>>(num_threads));
+    }
+    std::vector<std::vector<std::future<fmap>>> futures(num_threads);
+    for (uint32_t i = 0; i != num_threads; i++) {
+        for (uint32_t j = 0; j != num_threads; j++) {
+            futures[i].push_back(promises[j][i].get_future());
+        }
     }
 
-    std::vector<fs::path> files_to_sweep = utils::find_all_files(dir, [](const std::string& extension) {
+    std::vector<fs::path> all_files = utils::find_all_files(dir, [](const std::string& extension) {
         return extension == ".txt";
     });
 
-    std::vector<std::vector<fs::path>> files_per_thread(num_threads);
-    for (uint32_t i = 0; i < files_to_sweep.size(); i++) {
-        files_per_thread[i % num_threads].push_back(files_to_sweep[i]);
+    // map each file to a thread
+    std::vector<std::vector<fs::path>> files_to_sweep(num_threads);
+    for (uint32_t i = 0; i < all_files.size(); i++) {
+        files_to_sweep[i % num_threads].push_back(all_files[i]);
     }
 
-    auto my_sweep = [this, &files_per_thread, &wc_mtx](const uint32_t thread_id, std::promise<group_t>&& my_promise) {
-        std::vector<fs::path> local_files_to_sweep = files_per_thread[thread_id];
+    auto sweep = [this, &wc_mtx](std::vector<fs::path>&& my_files_to_sweep,
+                                 std::vector<std::promise<fmap>>&& my_promises,
+                                 std::vector<std::future<fmap>>&& my_futures) {
         std::map<std::string, uint64_t> local_freq;
         std::map<std::string, uint64_t> local_n_gram_freq;
         std::vector<std::string> local_n_grams;
 
-        for (fs::path file : local_files_to_sweep) {
+        for (fs::path file : my_files_to_sweep) {
             process_file(file, local_freq, local_n_gram_freq, local_n_grams);
         }
 
         // group by
-        group_t group_by_thread(num_threads);
+        std::vector<std::map<std::string, uint64_t>> group_by_thread(num_threads);
         for (std::string n_gram : local_n_grams) {
             size_t t = std::hash<std::string>{}(n_gram) % num_threads;
             group_by_thread[t][n_gram] = local_n_gram_freq[n_gram];
         }
+        for (uint32_t i = 0; i != num_threads; i++) {
+            my_promises[i].set_value(group_by_thread[i]);
+        }
 
-        my_promise.set_value(group_by_thread);
+        // shuffle
+        std::vector<fmap> my_fmaps(num_threads);
+        for (uint32_t i = 0; i != num_threads; i++) {
+            my_fmaps[i] = my_futures[i].get();
+        }
 
         // update this->freq and exit
         std::lock_guard<std::mutex> lock(wc_mtx);
@@ -64,42 +80,10 @@ void wc::wordCounter::compute() {
         }
     };
 
-    // threads use this atomic as fetch and add to decide on which files to process
-    // std::atomic<uint64_t> global_index = 0;
-
-    // auto sweep = [this, &files_to_sweep, &global_index, &wc_mtx]() {
-    //     std::map<std::string, uint64_t> local_freq;
-
-    //     uint64_t file_index;
-    //     while ((file_index = global_index++) < files_to_sweep.size()) {
-    //         process_file(files_to_sweep[file_index], local_freq);
-    //     }
-
-    //     // update this->freq and exit
-    //     std::lock_guard<std::mutex> lock(wc_mtx);
-    //     for (auto [word, cnt] : local_freq) {
-    //         freq[word] += cnt;
-    //     }
-    // };
-
     // start all threads and wait for them to finish
     std::vector<std::thread> workers;
     for (uint32_t i = 0; i < num_threads; ++i) {
-        // workers.push_back(std::thread(sweep));
-        workers.push_back(std::thread(my_sweep, i, std::move(promises[i])));
-    }
-
-    std::vector<group_t> results;
-    for (size_t i = 0; i < num_threads; i++) {
-        results.push_back(futures[i].get());
-        {
-            std::lock_guard<std::mutex> lock(wc_mtx);
-            std::cout << "Thread " << i << " results back" << std::endl;
-            for (auto map : results[i]) {
-                std::cout << map.size() << " ";
-            }
-            std::cout << std::endl;
-        }
+        workers.push_back(std::thread(sweep, std::move(files_to_sweep[i]), std::move(promises[i]), std::move(futures[i])));
     }
 
     for (auto& worker : workers) {
