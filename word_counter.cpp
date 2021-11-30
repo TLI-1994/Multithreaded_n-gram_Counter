@@ -126,7 +126,7 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
         std::sregex_token_iterator end;
         // in case the first character of my_sentence is space, skip the parsed empty string
         if (*iter == "") iter++;
-        process_file_string_helper(iter, end, local_n_gram_freq, local_n_grams);
+        retrieve_n_gram(iter, end, local_n_gram_freq, local_n_grams);
 
         // discard from the beginning of my_string to the appearance of the first punctuation mark
         my_string = i == my_string.size() ? my_string.substr(i) : my_string.substr(i + 1);
@@ -143,9 +143,9 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
     }
 }
 
-void wc::wordCounter::process_file_string_helper(std::sregex_token_iterator iter, std::sregex_token_iterator end,
-                                                 std::map<std::string, uint64_t>& local_n_gram_freq,
-                                                 std::vector<std::string>& local_n_grams) {
+void wc::wordCounter::retrieve_n_gram(std::sregex_token_iterator iter, std::sregex_token_iterator end,
+                                      std::map<std::string, uint64_t>& local_n_gram_freq,
+                                      std::vector<std::string>& local_n_grams) {
     static std::mutex io_mutex;
     if (std::distance(iter, end) >= n) {
         std::stringstream my_n_gram_stream;
@@ -169,6 +169,6 @@ void wc::wordCounter::process_file_string_helper(std::sregex_token_iterator iter
             std::scoped_lock lock(io_mutex);
             std::cout << my_n_gram_stream.str() << std::endl;
         }
-        process_file_string_helper(++iter, end, local_n_gram_freq, local_n_grams);
+        retrieve_n_gram(++iter, end, local_n_gram_freq, local_n_grams);
     }
 }
