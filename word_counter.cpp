@@ -18,10 +18,7 @@ wc::wordCounter::wordCounter(const std::string& dir, uint32_t n, uint32_t num_th
       num_threads(num_threads) {
 }
 
-void wc::wordCounter::compute() {
-    // this tracks which files have already been processed or are being processed
-    std::mutex wc_mtx;
-
+void wc::wordCounter::process() {
     using fmap = std::map<std::string, uint64_t>;
 
     // shuffle
@@ -46,15 +43,19 @@ void wc::wordCounter::compute() {
         files_to_sweep[i % num_threads].push_back(all_files[i]);
     }
 
-    auto sweep = [this, &wc_mtx](std::vector<fs::path>&& my_files_to_sweep,
-                                 std::vector<std::promise<fmap>>&& my_promises,
-                                 std::vector<std::future<fmap>>&& my_futures) {
-        std::map<std::string, uint64_t> local_freq;
+    std::mutex wc_mtx;
+    std::atomic<uint32_t> display_id = 0;
+    std::condition_variable cv;
+    auto sweep = [this, &wc_mtx, &display_id, &cv](uint32_t thread_id,
+                                                   std::vector<fs::path>&& my_files_to_sweep,
+                                                   std::vector<std::promise<fmap>>&& my_promises,
+                                                   std::vector<std::future<fmap>>&& my_futures) {
+        // std::map<std::string, uint64_t> local_freq;
         std::map<std::string, uint64_t> local_n_gram_freq;
         std::vector<std::string> local_n_grams;
 
         for (fs::path file : my_files_to_sweep) {
-            process_file(file, local_freq, local_n_gram_freq, local_n_grams);
+            process_file(file, local_n_gram_freq, local_n_grams);
         }
 
         // group by
@@ -73,17 +74,44 @@ void wc::wordCounter::compute() {
             my_fmaps[i] = my_futures[i].get();
         }
 
-        // update this->freq and exit
-        std::lock_guard<std::mutex> lock(wc_mtx);
-        for (auto [word, cnt] : local_freq) {
-            freq[word] += cnt;
+        // reduce
+        std::map<std::string, uint64_t> final_map;
+        for (uint32_t i = 0; i != num_threads; i++) {
+            for (auto& kv : my_fmaps[i]) {
+                final_map[kv.first] += kv.second;
+            }
         }
+
+        // sorting
+        using pair_t = std::pair<std::string, uint64_t>;
+        std::vector<pair_t> freq_vec(final_map.size());
+        uint32_t index = 0;
+        for (auto [word, cnt] : final_map) {
+            freq_vec[index++] = {word, cnt};
+        }
+        std::sort(freq_vec.begin(), freq_vec.end(), [](const pair_t& p1, const pair_t& p2) {
+            // decreasing order, of course
+            return p1.second > p2.second || (p1.second == p2.second && p1.first < p2.first);
+        });
+
+        // display
+        std::unique_lock<std::mutex> lock(wc_mtx);
+        while (display_id.load() != thread_id) {
+            cv.wait(lock);
+        }
+        std::cout << " * =================================== Thread " << thread_id << std::endl;
+        for (size_t i = 0; i != freq_vec.size() && i != head; i++) {
+            std::cout << " | " << freq_vec[i].first << ": " << freq_vec[i].second << std::endl;
+        }
+        std::cout << " * --------------------------------------------- " << std::endl;
+        display_id++;
+        cv.notify_all();
     };
 
     // start all threads and wait for them to finish
     std::vector<std::thread> workers;
     for (uint32_t i = 0; i < num_threads; ++i) {
-        workers.push_back(std::thread(sweep, std::move(files_to_sweep[i]), std::move(promises[i]), std::move(futures[i])));
+        workers.push_back(std::thread(sweep, i, std::move(files_to_sweep[i]), std::move(promises[i]), std::move(futures[i])));
     }
 
     for (auto& worker : workers) {
@@ -91,25 +119,7 @@ void wc::wordCounter::compute() {
     }
 }
 
-void wc::wordCounter::display() {
-    // to print in sorted value order (frequency), convert the map to a vector of pairs and then sort the vector
-    using pair_t = std::pair<std::string, uint64_t>;
-    std::vector<pair_t> freq_vec(freq.size());
-    uint32_t index = 0;
-    for (auto [word, cnt] : freq) {
-        freq_vec[index++] = {word, cnt};
-    }
-    std::sort(freq_vec.begin(), freq_vec.end(), [](const pair_t& p1, const pair_t& p2) {
-        // decreasing order, of course
-        return p1.second > p2.second || (p1.second == p2.second && p1.first < p2.first);
-    });
-
-    for (auto [word, cnt] : freq_vec) {
-        std::cout << word << ": " << cnt << std::endl;
-    }
-}
-
-void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_t>& local_freq,
+void wc::wordCounter::process_file(fs::path& file,
                                    std::map<std::string, uint64_t>& local_n_gram_freq,
                                    std::vector<std::string>& local_n_grams) {
     // read the entire file and update local_freq
@@ -146,44 +156,28 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
         // discard from the beginning of my_string to the appearance of the first punctuation mark
         my_string = i == my_string.size() ? my_string.substr(i) : my_string.substr(i + 1);
     }
-
-    // break the word into sequences of alphanumeric characters, ignoring other characters
-    std::regex rgx("\\W+");
-    std::sregex_token_iterator iter(contents.begin(), contents.end(), rgx, -1);
-    std::sregex_token_iterator end;
-    for (; iter != end; ++iter) {
-        if (*iter != "") {
-            local_freq[*iter]++;
-        }
-    }
 }
 
 void wc::wordCounter::retrieve_n_gram(std::sregex_token_iterator iter, std::sregex_token_iterator end,
                                       std::map<std::string, uint64_t>& local_n_gram_freq,
                                       std::vector<std::string>& local_n_grams) {
-    static std::mutex io_mutex;
-    if (std::distance(iter, end) >= n) {
-        std::stringstream my_n_gram_stream;
-        uint32_t i = 0;
-        while (i < n) {
-            my_n_gram_stream << *(std::next(iter, i));
-            if (i != n - 1) {
-                my_n_gram_stream << " ";
-            }
-            i++;
+    if (std::distance(iter, end) < n) return;
+    std::stringstream my_n_gram_stream;
+    uint32_t i = 0;
+    while (i < n) {
+        my_n_gram_stream << *(std::next(iter, i));
+        if (i != n - 1) {
+            my_n_gram_stream << " ";
         }
-        std::string my_n_gram = my_n_gram_stream.str();
-
-        // update local n-gram freq and n-gram table
-        if (local_n_gram_freq.find(my_n_gram) == local_n_gram_freq.end()) {
-            local_n_grams.push_back(my_n_gram);
-        }
-        local_n_gram_freq[my_n_gram]++;
-
-        {
-            std::scoped_lock lock(io_mutex);
-            std::cout << my_n_gram_stream.str() << std::endl;
-        }
-        retrieve_n_gram(++iter, end, local_n_gram_freq, local_n_grams);
+        i++;
     }
+    std::string my_n_gram = my_n_gram_stream.str();
+
+    // update local n-gram freq and n-gram table
+    if (local_n_gram_freq.find(my_n_gram) == local_n_gram_freq.end()) {
+        local_n_grams.push_back(my_n_gram);
+    }
+    local_n_gram_freq[my_n_gram]++;
+
+    retrieve_n_gram(++iter, end, local_n_gram_freq, local_n_grams);
 }

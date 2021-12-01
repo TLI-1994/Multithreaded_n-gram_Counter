@@ -10,6 +10,5 @@ int main(int argc, char* argv[]) {
     }
 
     wc::wordCounter word_counter(argv[1], std::stoi(argv[2]), std::stoi(argv[3]));
-    word_counter.compute();
-    word_counter.display();
+    word_counter.process();
 }
