@@ -7,11 +7,7 @@ Author: Tianjiao Li @ Cornell MAE
 Inspired by: Sagar Jha's wc++ program
 Highlight: this program is built around the map-reduce pattern in concurrent programming. */
 int main(int argc, char* argv[]) {
-    if (argc < 4) {
-        std::cout << "Usage: " << argv[0] << " <dir> -n=<#gram> -t=<#threads>" << std::endl;
-        return 1;
-    }
-    if (std::string(argv[2]).substr(0, 2) != "-n" || std::string(argv[3]).substr(0, 2) != "-t") {
+    if (argc < 4 || std::string(argv[2]).substr(0, 3) != "-n=" || std::string(argv[3]).substr(0, 3) != "-t=") {
         std::cout << "Usage: " << argv[0] << " <dir> -n=<#gram> -t=<#threads>" << std::endl;
         return 1;
     }
