@@ -52,21 +52,32 @@ void wc::wordCounter::process() {
             process_file(file, local_freq);
 
         // group by
-        std::vector<std::map<std::string, uint64_t>> group_by_thread(num_threads);
+        std::vector<std::map<std::string, uint64_t>> subsets(num_threads);
         for (auto& p : local_freq) {
             size_t t = std::hash<std::string>{}(p.first) % num_threads;
-            group_by_thread[t][p.first] = local_freq[p.first];
+            subsets[t][p.first] = local_freq[p.first];
         }
-        for (uint32_t i = 0; i != num_threads; i++) my_promises[i].set_value(group_by_thread[i]);
 
         // shuffle
-        std::vector<fmap> my_fmaps(num_threads);
-        for (uint32_t i = 0; i != num_threads; i++) my_fmaps[i] = my_futures[i].get();
+        for (uint32_t i = 0; i != num_threads; i++) my_promises[i].set_value(subsets[i]);
 
         // reduce
         std::map<std::string, uint64_t> final_map;
-        for (fmap my_fmap : my_fmaps)
-            for (auto& kv : my_fmap) final_map[kv.first] += kv.second;
+        uint32_t finished = 0;
+        std::vector<bool> is_finished(num_threads, false);
+        size_t i = 0;
+        while (finished != num_threads) {
+            if (!is_finished[i]) {
+                std::future_status status = my_futures[i].wait_for(std::chrono::milliseconds(0));
+                if (status == std::future_status::ready) {
+                    std::map<std::string, uint64_t> my_fmap = my_futures[i].get();
+                    for (auto& p : my_fmap) final_map[p.first] += p.second;
+                    is_finished[i] = true;
+                    finished++;
+                }
+            }
+            i = (i + 1) % num_threads;
+        }
 
         // sorting
         using pair_t = std::pair<std::string, uint64_t>;
