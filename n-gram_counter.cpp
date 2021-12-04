@@ -19,8 +19,6 @@ wc::wordCounter::wordCounter(const std::string& dir, uint32_t n, uint32_t num_th
 }
 
 void wc::wordCounter::process() {
-    using fmap = std::map<std::string, uint64_t>;
-
     std::vector<std::vector<std::promise<fmap>>> promises;
     for (uint32_t i = 0; i != num_threads; i++)
         promises.push_back(std::vector<std::promise<fmap>>(num_threads));
@@ -47,12 +45,12 @@ void wc::wordCounter::process() {
                                                    std::vector<fs::path>&& my_files_to_sweep,
                                                    std::vector<std::promise<fmap>>&& my_promises,
                                                    std::vector<std::future<fmap>>&& my_futures) {
-        std::map<std::string, uint64_t> local_freq;
+        fmap local_freq;
         for (fs::path file : my_files_to_sweep)
             process_file(file, local_freq);
 
         // group by
-        std::vector<std::map<std::string, uint64_t>> subsets(num_threads);
+        std::vector<fmap> subsets(num_threads);
         for (auto& p : local_freq) {
             size_t t = std::hash<std::string>{}(p.first) % num_threads;
             subsets[t][p.first] = local_freq[p.first];
@@ -62,7 +60,7 @@ void wc::wordCounter::process() {
         for (uint32_t i = 0; i != num_threads; i++) my_promises[i].set_value(subsets[i]);
 
         // reduce
-        std::map<std::string, uint64_t> final_map;
+        fmap final_map;
         uint32_t finished = 0;
         std::vector<bool> is_finished(num_threads, false);
         size_t i = 0;
@@ -70,7 +68,7 @@ void wc::wordCounter::process() {
             if (!is_finished[i]) {
                 std::future_status status = my_futures[i].wait_for(std::chrono::milliseconds(0));
                 if (status == std::future_status::ready) {
-                    std::map<std::string, uint64_t> my_fmap = my_futures[i].get();
+                    fmap my_fmap = my_futures[i].get();
                     for (auto& p : my_fmap) final_map[p.first] += p.second;
                     is_finished[i] = true;
                     finished++;
@@ -109,7 +107,7 @@ void wc::wordCounter::process() {
         worker.join();
 }
 
-void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_t>& local_freq) {
+void wc::wordCounter::process_file(fs::path& file, fmap& local_freq) {
     // read the entire file and update local_freq
     std::ifstream fin(file);
     std::stringstream buffer;
@@ -142,7 +140,7 @@ void wc::wordCounter::process_file(fs::path& file, std::map<std::string, uint64_
 }
 
 void wc::wordCounter::retrieve_n_gram(std::sregex_token_iterator iter, std::sregex_token_iterator end,
-                                      std::map<std::string, uint64_t>& local_freq) {
+                                      fmap& local_freq) {
     if (std::distance(iter, end) < n) return;
     std::stringstream my_n_gram_stream;
     uint32_t i = 0;
