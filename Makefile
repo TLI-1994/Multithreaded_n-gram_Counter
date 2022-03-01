@@ -1,7 +1,7 @@
 OBJS	= ngc++.o n-gram_counter.o utils.o
 SOURCE	= ngc++.cpp n-gram_counter.cpp utils.cpp
 HEADER	= n-gram_counter.hpp utils.hpp
-OUT	= hw4
+OUT	= ngc++
 CC	 = g++
 FLAGS	 = -g -c -Wall -O3
 LFLAGS	 = -lpthread -lstdc++fs
