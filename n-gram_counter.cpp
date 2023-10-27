@@ -40,12 +40,11 @@ void wc::wordCounter::process() {
     std::atomic<uint32_t> display_id = 0;
     std::condition_variable cv;
     auto sweep = [this, &wc_mtx, &display_id, &cv](
-                     uint32_t thread_id,
-                     std::vector<fs::path>&& my_files_to_sweep,
+                     uint32_t thread_id, std::vector<fs::path>&& files,
                      std::vector<std::promise<fmap>>&& my_promises,
                      std::vector<std::future<fmap>>&& my_futures) {
         fmap local_freq;
-        for (fs::path file : my_files_to_sweep) {
+        for (fs::path file : files) {
             process_file(file, local_freq);
         }
 
@@ -105,7 +104,7 @@ void wc::wordCounter::process() {
         std::cout << " * --------------------------------------------- "
                   << std::endl;
         display_id++;
-        cv.notify_all();
+        cv.notify_one();
     };
     // start all threads and wait for them to finish
     std::vector<std::thread> workers;
